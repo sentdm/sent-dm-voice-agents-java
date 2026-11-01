@@ -1,0 +1,52 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - run: gradle spotlessCheck build --no-daemon
+      - name: The publications build
+        # Everything publishAndReleaseToMavenCentral would upload, built into a local folder: no signing, no
+        # credentials, so a broken POM or a missing sources jar fails here, not on release day.
+        run: gradle publishAllPublicationsToLocalFileSystemRepository -PpublishLocal --no-daemon && find build/local-maven-repo -name '*.pom' | sed 's#build/local-maven-repo/##'
+
+  conformance:
+    name: conformance
+    # The protocol's scenarios against this SDK's conformance agent, at the protocol tag the package implements.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: gradle :conformance:installDist --no-daemon
+      - uses: sentdm/sent-dm-voice-protocol@v0.2.0
+        with:
+          agent: conformance/build/install/conformance/bin/conformance
