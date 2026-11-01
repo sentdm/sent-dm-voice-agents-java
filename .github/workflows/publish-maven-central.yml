@@ -1,0 +1,83 @@
+# Runs when release-please publishes a release, and by hand to publish again if a run failed. By hand with
+# `dry_run`, it builds every publication into a local folder and stops, which checks the POM, the sources and the
+# javadoc jars without signing or credentials. A hand publish runs on the release tag, never on a branch:
+# `gh workflow run publish-maven-central.yml --ref v<version>`.
+#
+# Maven Central has no trusted publishing: the Central Portal is pushed with a Portal token, and every
+# publication is signed with a GPG key, both from repository secrets (SONATYPE_USERNAME, SONATYPE_PASSWORD,
+# GPG_SIGNING_KEY, GPG_SIGNING_PASSWORD), the same four the Voice Client for Android publishes with. A version
+# Maven Central already serves is skipped, so a re-run is safe.
+name: Publish Maven Central
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Build every publication into a local folder and stop, to check them without publishing
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+concurrency:
+  # A dry run never queues behind, or displaces, a real publish.
+  group: publish-maven-central${{ inputs.dry_run && '-dry-run' || '' }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: The version to publish
+        # 0.0.0 is the template's placeholder: the repository has no release yet. A hand run publishes the
+        # release tag whose version gradle.properties carries, so main's later commits never ship under an old
+        # number.
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          version="$(sed -n 's/^version=\([0-9][^ #]*\).*/\1/p' gradle.properties)"
+          echo "version=$version"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          [ "$DRY_RUN" = "true" ] && exit 0
+          if [ "$version" = "0.0.0" ]; then
+            echo "no release yet: gradle.properties still carries 0.0.0" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && { [ "$GITHUB_REF_TYPE" != "tag" ] || [ "$GITHUB_REF_NAME" != "v$version" ]; }; then
+            echo "a hand run publishes the release tag: gh workflow run publish-maven-central.yml --ref v$version" >&2
+            exit 1
+          fi
+      - name: Build every publication into a local folder
+        if: ${{ inputs.dry_run }}
+        run: gradle publishAllPublicationsToLocalFileSystemRepository -PpublishLocal --no-daemon --no-configuration-cache && find build/local-maven-repo -type f | sed 's#build/local-maven-repo/##'
+      - name: Publish to Maven Central
+        if: ${{ !inputs.dry_run }}
+        # The plugin reads the Portal token and the signing key from Gradle properties; the ORG_GRADLE_PROJECT_
+        # prefix turns an environment variable into one. The key is the ASCII-armored secret key; with no subkeys
+        # it needs no key id. Values are never printed.
+        env:
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.SONATYPE_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.SONATYPE_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.GPG_SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.GPG_SIGNING_PASSWORD }}
+        run: |
+          for name in ORG_GRADLE_PROJECT_mavenCentralUsername ORG_GRADLE_PROJECT_mavenCentralPassword ORG_GRADLE_PROJECT_signingInMemoryKey; do
+            [ -n "${!name}" ] || { echo "$name is empty: the repository secret behind it is not set" >&2; exit 1; }
+          done
+          if curl -fsS -o /dev/null "https://repo1.maven.org/maven2/dm/sent/voice-agents/$VERSION/voice-agents-$VERSION.pom"; then
+            echo "dm.sent:voice-agents $VERSION is already on Maven Central"
+            exit 0
+          fi
+          gradle publishAndReleaseToMavenCentral --no-daemon --no-configuration-cache
