@@ -215,6 +215,7 @@ public final class Agent {
 
     private void openConnection(List<Session> pending, int delayMs) {
         Connection connection = new Connection(pending, log);
+        connection.broken = () -> broken(connection);
         synchronized (gate) {
             connections.add(connection);
         }
@@ -282,9 +283,33 @@ public final class Agent {
         closed(connection);
     }
 
+    /** A send failed: the socket is dead, whatever the JDK has reported about it. */
+    private void broken(Connection connection) {
+        if (connection.cancelled) {
+            return;
+        }
+        log.info("lost: a send failed");
+        WebSocket socket = connection.socket;
+        if (socket != null) {
+            socket.abort();
+        }
+        deliver(connection, () -> closed(connection));
+    }
+
     /**
-     * Reads one socket: whole messages to the agent, with the connection reported closed whatever
-     * ends it.
+     * Runs the next step of a connection's inbox: messages and the close, in the order they
+     * arrived.
+     */
+    private void deliver(Connection connection, Runnable step) {
+        synchronized (connection.inboxGate) {
+            connection.inbox = connection.inbox.thenRunAsync(() -> guarded(step), handlers);
+        }
+    }
+
+    /**
+     * Reads one socket. Each callback asks for the next message and hands the one it got to the
+     * connection's inbox at once, so the JDK is never left without demand while the agent works:
+     * see Connection.inbox.
      */
     private final class Reader implements WebSocket.Listener {
         private final Connection connection;
@@ -315,12 +340,17 @@ public final class Agent {
         @Override
         public CompletionStage<?> onText(WebSocket socket, CharSequence data, boolean last) {
             text.append(data);
+            String message = null;
             if (last) {
-                String message = text.toString();
+                message = text.toString();
                 text.setLength(0);
-                received(message, null);
             }
             socket.request(1);
+            if (message != null) {
+                heard(connection);
+                String whole = message;
+                deliver(connection, () -> received(whole, null));
+            }
             return null;
         }
 
@@ -329,30 +359,45 @@ public final class Agent {
             byte[] chunk = new byte[data.remaining()];
             data.get(chunk);
             bytes.write(chunk, 0, chunk.length);
+            byte[] message = null;
             if (last) {
-                byte[] message = bytes.toByteArray();
+                message = bytes.toByteArray();
                 bytes.reset();
-                received(null, message);
             }
             socket.request(1);
+            if (message != null) {
+                heard(connection);
+                byte[] whole = message;
+                deliver(connection, () -> received(null, whole));
+            }
             return null;
         }
 
         @Override
         public CompletionStage<?> onClose(WebSocket socket, int status, String reason) {
-            log.info(("closed with " + status + " " + reason).trim());
-            closed(connection);
+            String what = ("closed with " + status + " " + reason).trim();
+            deliver(
+                    connection,
+                    () -> {
+                        log.info(what);
+                        closed(connection);
+                    });
             return null;
         }
 
         @Override
         public void onError(WebSocket socket, Throwable error) {
-            log.info(connection.cancelled ? "closed by the agent" : "lost: " + error.getMessage());
-            closed(connection);
+            String what =
+                    connection.cancelled ? "closed by the agent" : "lost: " + error.getMessage();
+            deliver(
+                    connection,
+                    () -> {
+                        log.info(what);
+                        closed(connection);
+                    });
         }
 
         private void received(String message, byte[] binary) {
-            heard(connection);
             if (binary != null) {
                 handleAudio(connection, binary);
                 return;
