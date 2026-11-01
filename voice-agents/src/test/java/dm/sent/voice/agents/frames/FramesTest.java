@@ -22,7 +22,8 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 
 class FramesTest {
-    private static final Path ROOT = Path.of(System.getProperty("sent.fixtures", "../tests/fixtures"));
+    private static final Path ROOT =
+            Path.of(System.getProperty("sent.fixtures", "../tests/fixtures"));
 
     static List<String> fixtures(String kind) throws IOException {
         try (Stream<Path> files = Files.walk(ROOT.resolve(kind))) {
@@ -54,7 +55,10 @@ class FramesTest {
         assertEquals(data.get("type").textValue(), frame.type());
         ObjectNode again = Protocol.encode(frame);
         for (Map.Entry<String, JsonNode> field : data.properties()) {
-            assertEquals(field.getValue(), again.get(field.getKey()), field.getKey() + " changed on the way back");
+            assertEquals(
+                    field.getValue(),
+                    again.get(field.getKey()),
+                    field.getKey() + " changed on the way back");
         }
         assertEquals(again, Protocol.encode(Protocol.decode(again)));
     }
@@ -115,7 +119,8 @@ class FramesTest {
     @Test
     void encodeRefusesABadFrame() {
         assertThrows(FrameException.class, () -> Protocol.encode(AgentSay.of("nope", "hi")));
-        assertThrows(FrameException.class, () -> Protocol.encode(ToolCall.of("vs_1", "t1", "transfer")));
+        assertThrows(
+                FrameException.class, () -> Protocol.encode(ToolCall.of("vs_1", "t1", "transfer")));
         assertThrows(FrameException.class, () -> Protocol.decode("not json"));
     }
 
