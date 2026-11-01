@@ -48,5 +48,8 @@ jobs:
           node-version: '22'
       - run: gradle :conformance:installDist --no-daemon
       - uses: sentdm/sent-dm-voice-protocol@v0.2.0
+        # Diagnostic, not for the template: the JDK's WebSocket and HTTP client debug logs around a dropped connection.
+        env:
+          JAVA_OPTS: -Djdk.internal.httpclient.websocket.debug=true -Djdk.internal.httpclient.debug=true
         with:
           agent: conformance/build/install/conformance/bin/conformance
